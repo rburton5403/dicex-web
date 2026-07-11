@@ -299,14 +299,23 @@ function drawTitle(seed) {
   ctx.textAlign = "center";
   ctx.fillStyle = "#a8a8a8";
   ctx.font = "bold 15px 'Courier New', monospace";
-  ctx.fillText("STACK THE DICE.  ANY ROW OR COLUMN THAT ADDS UP", 320, 236);
-  ctx.fillText("TO 6 AND THEN 9 IS WIPED OFF THE BOARD.", 320, 258);
-  ctx.fillStyle = "#666";
+  ctx.fillText("LINE UP TOUCHING DICE THAT ADD TO EXACTLY 6,", 320, 232);
+  ctx.fillText("THEN TO EXACTLY 9.  THEY ALL GET WIPED.", 320, 252);
+
+  // a worked example, drawn with the real dice
+  const ex = [3, 3, 4, 5];
+  const ox = 320 - (ex.length * DW) / 2;
+  for (let i = 0; i < ex.length; i++) ctx.drawImage(img[ex[i] + "die"], ox + i * DW, 276);
+  ctx.fillStyle = "#ff5555";
   ctx.font = "bold 13px 'Courier New', monospace";
-  ctx.fillText("ORIGINALLY WRITTEN IN TURBO PASCAL, 1994", 320, 300);
+  ctx.fillText("3 + 3 = 6 . . . THEN . . . 4 + 5 = 9", 320, 312);
+  ctx.fillStyle = "#666";
+  ctx.fillText("ROWS AND COLUMNS BOTH COUNT. A GAP BREAKS THE RUN.", 320, 334);
+  ctx.fillText("ORIGINALLY WRITTEN IN TURBO PASCAL, 1994", 320, 354);
+
   ctx.fillStyle = "#ff5555";
   ctx.font = "bold 19px 'Courier New', monospace";
-  ctx.fillText("PRESS ANY KEY TO PLAY", 320, 350);
+  ctx.fillText("PRESS ANY KEY TO PLAY", 320, 392);
   ctx.textAlign = "left";
 }
 

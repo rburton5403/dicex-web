@@ -11,17 +11,28 @@ A web recreation of **DICEX**, a DOS game I wrote in Turbo Pascal in 1994.
 Dice fall one at a time into a 9 × 13 well. You can slide them left and right on
 the way down, but you can't rotate anything — a die is just a number.
 
-Any horizontal or vertical run of touching dice that adds up to **6**, and then
-adds up to **9**, is wiped off the board. That's the whole game, and it's where
-the "69's" counter in the corner comes from.
+Walk along any row or column adding up the dice as you go. You are looking for
+**two back-to-back groups of touching dice — one that adds to exactly 6, and one
+that adds to exactly 9.** When a line contains both, every die from the start of
+the first group to the end of the second is wiped off the board.
 
-    3 3 4 5     →   3+3 = 6, then 4+5 = 9   →   all four dice vanish
-    4 5 6       →   4+5 = 9, then 6         →   also counts, order doesn't matter
-    5 5 5       →   never hits 6 or 9       →   nothing happens
+    3 3 4 5     3+3 = 6,   then 4+5 = 9     →  all four wiped
+    6 4 5       6 = 6,     then 4+5 = 9     →  all three wiped
+    2 2 2 3 3 3 2+2+2 = 6, then 3+3+3 = 9   →  all six wiped
+    4 5 6       4+5 = 9 first, then 6       →  order doesn't matter
+    5 5 5       5, 10, 15 — never lands on  →  nothing happens
+                6 or 9 exactly
 
-An empty cell breaks a run. Gravity applies to the *whole board*, not just the
-active die, so everything left floating after a clear settles down and can chain
-into new combinations. Clear seven 69's and the dice start falling faster.
+That's the whole game, and it's where the "69's" counter in the corner comes
+from. (I was a teenager in 1994.)
+
+The total has to land on 6 *exactly* — overshooting doesn't count. An empty cell
+breaks the run, so holes in your stack are what kill you. And gravity applies to
+the *whole board*, not just the active die: when a clear pulls dice out from
+under a stack, everything above drops and can trigger a fresh 6-and-9 you never
+planned. That's where the big scores come from.
+
+Clear seven 69's and the dice start falling faster.
 
 | Key | |
 |---|---|
