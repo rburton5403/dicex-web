@@ -1,0 +1,497 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DICEX</title>
+<meta name="description" content="DICEX — a 1994 Turbo Pascal DOS game, recreated for the web.">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: #000; color: #a8a8a8;
+    font-family: "Courier New", monospace;
+    overflow: hidden;
+    -webkit-user-select: none; user-select: none;
+    touch-action: manipulation;
+  }
+  #wrap {
+    height: 100%; width: 100%;
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center;
+    gap: 10px; padding: 8px;
+  }
+  #screen {
+    /* 640x480 VGA backing store, scaled up with hard pixel edges */
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    width: auto; height: auto;
+    max-width: 100%;
+    max-height: calc(100vh - 90px);
+    aspect-ratio: 4 / 3;
+    background: #000;
+    border: 1px solid #222;
+    cursor: pointer;
+  }
+  #pad {
+    display: none;
+    gap: 10px;
+  }
+  #pad button {
+    width: 74px; height: 54px;
+    background: #151515; color: #a8a8a8;
+    border: 2px solid #555; border-radius: 6px;
+    font-family: inherit; font-size: 22px; font-weight: bold;
+    cursor: pointer;
+  }
+  #pad button:active { background: #aa0000; color: #fff; border-color: #ff5555; }
+  #hint { font-size: 12px; color: #555; letter-spacing: 1px; text-align: center; }
+  @media (pointer: coarse) { #pad { display: flex; } #hint { display: none; } }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="screen" width="640" height="480" aria-label="DICEX game screen"></canvas>
+  <div id="pad">
+    <button id="bl" aria-label="Move left">&#9664;</button>
+    <button id="bd" aria-label="Move down">&#9660;</button>
+    <button id="br" aria-label="Move right">&#9654;</button>
+  </div>
+  <div id="hint">&#8592; &#8594; MOVE &nbsp;&nbsp; &#8595; DROP ONE &nbsp;&nbsp; SPACE SLAM &nbsp;&nbsp; P PAUSE</div>
+</div>
+
+<script>
+"use strict";
+
+/* ==========================================================================
+   DICEX  --  originally written in Turbo Pascal for DOS/VGA, 1994.
+   The rules below are a direct port of PLAYAREA.PAS / PLAYGAME.PAS.
+   Sprites are the original 16-colour VGA bitmaps, decoded from the .IMG files.
+   ========================================================================== */
+
+/* ---- Original screen geometry (VGAHI = 640x480) ---- */
+const FIELDMAXX = 9;
+const FIELDMAXY = 13;
+const DW = 26, DH = 27;                       // die sprite size
+const X0 = (640 - (DW * 13)) / 2;             // 151 -- border origin
+const cellX = x => X0 + DW * (x + 1);         // PLAYAREA.DRAWDIEAT
+const cellY = y => DH * (y - 1) + 100;
+
+/* ---- Assets ---- */
+const NAMES = ["1die","2die","3die","4die","5die","6die","border","logo"];
+const img = {};
+let loaded = 0;
+
+/* ---- Game state ---- */
+let playfield, elimGrid;
+let level, sixty9s, score, gravityAt;
+let dieX, dieY;
+let gravityCount, lastTick;
+let state = "title";            // title | playing | paused | over
+let flash = null;               // cells to flash white on elimination
+let best = 0;
+try { best = parseInt(localStorage.getItem("dicex.best") || "0", 10) || 0; } catch (e) {}
+
+const cvs = document.getElementById("screen");
+const ctx = cvs.getContext("2d");
+ctx.imageSmoothingEnabled = false;
+
+/* ==========================================================================
+   Playfield helpers  (PLAYAREA.PAS)
+   ========================================================================== */
+
+function newPlayArea() {
+  playfield = [];
+  elimGrid  = [];
+  for (let x = 0; x <= FIELDMAXX; x++) {
+    playfield[x] = new Array(FIELDMAXY + 1).fill(0);
+    elimGrid[x]  = new Array(FIELDMAXY + 1).fill(false);
+  }
+}
+
+/* PLAYAREA.DOGRAVITY -- every die on the board falls one cell if it can.
+   Scans bottom-up so a die moves at most one cell per tick. */
+function doGravity() {
+  let anyFall = false;
+  for (let y = FIELDMAXY - 1; y >= 1; y--) {
+    for (let x = 1; x <= FIELDMAXX; x++) {
+      if (playfield[x][y] !== 0 && playfield[x][y + 1] === 0) {
+        playfield[x][y + 1] = playfield[x][y];
+        playfield[x][y] = 0;
+        // keep the player's die coordinates in sync as the board settles
+        if (x === dieX && y === dieY) dieY = y + 1;
+        anyFall = true;
+      }
+    }
+  }
+  return anyFall;
+}
+
+/* PLAYAREA.ELIMLINE -- the heart of the game.
+   Walk a line accumulating a running total. Every time the total hits exactly
+   6 the run is banked as the "6"; when it hits exactly 9 it is banked as the
+   "9". Once a line holds both, every die from the start of the 6 to the end of
+   the 9 is wiped. A zero (empty cell) breaks the run. Hence: 69's. */
+function elimLine(arr, fieldLen) {
+  let wasChange = false;
+
+  for (let c = 1; c <= fieldLen; c++) {
+    let got6 = false, got9 = false;
+    let startFromZero = 0, start6 = 0, end9 = 0, total = 0;
+
+    for (let x = c; x <= fieldLen; x++) {
+      if (arr[x] === 0) {
+        got6 = false; got9 = false; total = 0;
+      } else {
+        if (total === 0) startFromZero = x;
+        total += arr[x];
+
+        if (total === 6) {
+          if (!got6) {
+            got6 = true;
+            start6 = got9 ? x : startFromZero;
+            total = 0;
+          }
+        } else if (total === 9) {
+          if (!got9) {
+            got9 = true;
+            end9 = got6 ? x : startFromZero;
+            total = 0;
+          }
+        }
+
+        if (got6 && got9) {
+          let a = start6, b = end9;
+          if (a > b) { const t = a; a = b; b = t; }
+          for (let l = a; l <= b; l++) arr[l] = 0;
+          wasChange = true;
+        }
+      }
+    }
+  }
+  return wasChange;
+}
+
+/* PLAYAREA.CHECKELIM -- scan all rows, then all columns. Both passes read the
+   ORIGINAL board (as in the Pascal); nothing is removed until the very end. */
+function checkElim() {
+  let sub69 = 0;
+  const cleared = [];
+
+  for (let x = 1; x <= FIELDMAXX; x++)
+    for (let y = 1; y <= FIELDMAXY; y++)
+      elimGrid[x][y] = false;
+
+  const chkLen = Math.max(FIELDMAXX, FIELDMAXY);
+
+  // horizontal
+  for (let y = 1; y <= FIELDMAXY; y++) {
+    const chk = new Array(chkLen + 1).fill(0);
+    for (let x = 1; x <= FIELDMAXX; x++) chk[x] = playfield[x][y];
+
+    if (elimLine(chk, FIELDMAXX)) {
+      for (let x = 1; x <= FIELDMAXX; x++)
+        if (chk[x] !== playfield[x][y]) elimGrid[x][y] = true;
+      sub69++;
+    }
+  }
+
+  // vertical
+  for (let x = 1; x <= FIELDMAXX; x++) {
+    const chk = new Array(chkLen + 1).fill(0);
+    for (let y = 1; y <= FIELDMAXY; y++) chk[y] = playfield[x][y];
+
+    if (elimLine(chk, FIELDMAXY)) {
+      for (let y = 1; y <= FIELDMAXY; y++)
+        if (chk[y] !== playfield[x][y]) elimGrid[x][y] = true;
+      sub69++;
+    }
+  }
+
+  for (let y = 1; y <= FIELDMAXY; y++)
+    for (let x = 1; x <= FIELDMAXX; x++)
+      if (elimGrid[x][y]) { cleared.push([x, y]); playfield[x][y] = 0; }
+
+  return { sub69, cleared };
+}
+
+/* ==========================================================================
+   Rendering -- reproduces the original 640x480 screen layout
+   ========================================================================== */
+
+function drawScreen() {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, 640, 480);
+
+  // PLAYGAME.UPDBOARD -- score panel, in the original's top-left corner
+  ctx.font = "bold 15px 'Courier New', monospace";
+  ctx.textBaseline = "top";
+  ctx.fillStyle = "#a8a8a8";
+  ctx.fillText("SCORE: " + score, 6, 6);
+  ctx.fillText("69'S:  " + sixty9s, 6, 26);
+  ctx.fillText("LEVEL: " + level, 6, 46);
+  ctx.fillStyle = "#555";
+  ctx.fillText("BEST:  " + best, 6, 76);
+
+  // logo
+  ctx.drawImage(img.logo, (640 - 375) / 2, 1);
+
+  // NEWPLAYAREA -- two columns of border tiles each side, plus the floor
+  for (let y = 0; y <= 12; y++) {
+    for (let x = 0; x <= 1; x++) {
+      ctx.drawImage(img.border, X0 + DW * x, DH * y + 100);
+      ctx.drawImage(img.border, X0 + DW * (x + 11), DH * y + 100);
+    }
+  }
+  for (let x = -6; x <= 17; x++) {
+    ctx.drawImage(img.border, X0 + DW * x, DH * 13 + 100);
+  }
+
+  // the dice
+  for (let y = 1; y <= FIELDMAXY; y++) {
+    for (let x = 1; x <= FIELDMAXX; x++) {
+      const d = playfield[x][y];
+      if (d >= 1 && d <= 6) ctx.drawImage(img[d + "die"], cellX(x), cellY(y));
+    }
+  }
+
+  // elimination flash
+  if (flash && flash.t > 0) {
+    ctx.fillStyle = "rgba(255,255,255," + (flash.t / 6) + ")";
+    for (const [x, y] of flash.cells) ctx.fillRect(cellX(x), cellY(y), DW, DH);
+  }
+
+  if (state === "paused") banner("PAUSED", "PRESS P TO RESUME");
+  if (state === "over")   banner("GAME OVER", "PRESS ENTER TO PLAY AGAIN");
+}
+
+function banner(a, b) {
+  ctx.fillStyle = "rgba(0,0,0,0.78)";
+  ctx.fillRect(X0 + DW * 2, 200, DW * 9, 90);
+  ctx.strokeStyle = "#aa0000";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(X0 + DW * 2, 200, DW * 9, 90);
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#ff5555";
+  ctx.font = "bold 26px 'Courier New', monospace";
+  ctx.fillText(a, 320, 218);
+  ctx.fillStyle = "#a8a8a8";
+  ctx.font = "bold 13px 'Courier New', monospace";
+  ctx.fillText(b, 320, 256);
+  ctx.textAlign = "left";
+}
+
+/* The original opening: FILLWITHDICE(1500) splatters 1500 random dice across
+   the raw screen, then the palette fades out. Recreated here as the title. */
+function drawTitle(seed) {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, 640, 480);
+  let s = seed;
+  const rnd = n => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s % n; };
+  for (let i = 0; i < 1500; i++) {
+    ctx.drawImage(img[(1 + rnd(6)) + "die"], rnd(640), rnd(480));
+  }
+  ctx.fillStyle = "rgba(0,0,0,0.72)";
+  ctx.fillRect(0, 0, 640, 480);
+  ctx.drawImage(img.logo, (640 - 375) / 2, 96);
+
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#a8a8a8";
+  ctx.font = "bold 15px 'Courier New', monospace";
+  ctx.fillText("STACK THE DICE.  ANY ROW OR COLUMN THAT ADDS UP", 320, 236);
+  ctx.fillText("TO 6 AND THEN 9 IS WIPED OFF THE BOARD.", 320, 258);
+  ctx.fillStyle = "#666";
+  ctx.font = "bold 13px 'Courier New', monospace";
+  ctx.fillText("ORIGINALLY WRITTEN IN TURBO PASCAL, 1994", 320, 300);
+  ctx.fillStyle = "#ff5555";
+  ctx.font = "bold 19px 'Courier New', monospace";
+  ctx.fillText("PRESS ANY KEY TO PLAY", 320, 350);
+  ctx.textAlign = "left";
+}
+
+/* ==========================================================================
+   Sound -- the original just rang the PC speaker with WRITE(#7)
+   ========================================================================== */
+let audio = null;
+function beep(freq, ms, type) {
+  try {
+    if (!audio) audio = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audio.createOscillator(), g = audio.createGain();
+    o.type = type || "square";
+    o.frequency.value = freq;
+    g.gain.value = 0.05;
+    o.connect(g); g.connect(audio.destination);
+    o.start();
+    g.gain.exponentialRampToValueAtTime(0.001, audio.currentTime + ms / 1000);
+    o.stop(audio.currentTime + ms / 1000);
+  } catch (e) {}
+}
+
+/* ==========================================================================
+   Game loop  (PLAYGAME.GAMELOOP)
+   ========================================================================== */
+
+function spawn() {
+  dieX = 5;
+  dieY = 1;
+  playfield[dieX][dieY] = 1 + Math.floor(Math.random() * 6);
+  gravityCount = 0;
+}
+
+function startGame() {
+  newPlayArea();
+  level = 1;
+  sixty9s = 0;
+  score = 0;
+  gravityAt = Math.floor(100 / level) + 10;   // hundredths of a second
+  flash = null;
+  spawn();
+  lastTick = performance.now();
+  state = "playing";
+}
+
+/* try to shift the active die; only into an empty cell, exactly as the original */
+function move(dx, dy) {
+  if (state !== "playing") return;
+  const nx = dieX + dx, ny = dieY + dy;
+  if (nx < 1 || nx > FIELDMAXX || ny < 1 || ny > FIELDMAXY) return;
+  if (playfield[nx][ny] !== 0) return;
+  playfield[nx][ny] = playfield[dieX][dieY];
+  playfield[dieX][dieY] = 0;
+  dieX = nx; dieY = ny;
+}
+
+function slam() {                              // modern convenience: hard drop
+  if (state !== "playing") return;
+  while (dieY < FIELDMAXY && playfield[dieX][dieY + 1] === 0) move(0, 1);
+  gravityCount = gravityAt + 1;                // land it on the next tick
+}
+
+/* one gravity tick: the whole board settles; the turn ends when nothing moved */
+function tick() {
+  const anyFall = doGravity();
+  if (anyFall) return;
+
+  // the die (and everything else) has come to rest -> score the board
+  const { sub69, cleared } = checkElim();
+
+  if (sub69 > 0) {
+    sixty9s += sub69;
+    score += sub69 * (50 + sub69 * 5);         // PLAYGAME.GAMELOOP
+    flash = { cells: cleared, t: 6 };
+    beep(880, 70);
+
+    // NOTE: the original never resets SIXTY9S, so past 6 every 69 levels you up.
+    if (sixty9s > 6) {
+      level += 1;
+      score += level * 1000;
+      gravityAt = Math.floor(100 / level) + 10;
+      beep(1320, 120);
+    }
+  }
+
+  if (score > best) {
+    best = score;
+    try { localStorage.setItem("dicex.best", String(best)); } catch (e) {}
+  }
+
+  // UNTIL PLAYFIELD[5,1] <> 0
+  if (playfield[5][1] !== 0) {
+    state = "over";
+    beep(160, 400, "sawtooth");
+    return;
+  }
+  spawn();
+}
+
+function frame(now) {
+  if (state === "playing") {
+    const elapsed = now - lastTick;
+    lastTick = now;
+    gravityCount += elapsed / 10;              // the original counted 1/100ths
+    if (gravityCount > gravityAt) {
+      gravityCount = 0;
+      tick();
+    }
+    if (flash && flash.t > 0) flash.t -= 0.35;
+  } else {
+    lastTick = now;
+  }
+
+  if (state === "title") drawTitle(12345);
+  else drawScreen();
+
+  requestAnimationFrame(frame);
+}
+
+/* ==========================================================================
+   Input
+   ========================================================================== */
+
+const KEYS = {
+  ArrowLeft:  () => move(-1, 0),
+  ArrowRight: () => move(1, 0),
+  ArrowDown:  () => move(0, 1),
+  " ":        () => slam(),
+};
+
+window.addEventListener("keydown", e => {
+  if (state === "title") { startGame(); e.preventDefault(); return; }
+  if (state === "over") {
+    if (e.key === "Enter" || e.key === " ") { startGame(); e.preventDefault(); }
+    return;
+  }
+  if (e.key === "p" || e.key === "P") {
+    state = state === "paused" ? "playing" : "paused";
+    lastTick = performance.now();
+    e.preventDefault();
+    return;
+  }
+  if (state !== "playing") return;
+  const fn = KEYS[e.key];
+  if (fn) { fn(); e.preventDefault(); }
+});
+
+cvs.addEventListener("pointerdown", () => {
+  if (state === "title" || state === "over") startGame();
+});
+
+function hold(id, fn) {
+  const b = document.getElementById(id);
+  let timer = null, rep = null;
+  const go = e => {
+    e.preventDefault();
+    if (state === "title" || state === "over") { startGame(); return; }
+    fn();
+    timer = setTimeout(() => { rep = setInterval(fn, 90); }, 250);
+  };
+  const stop = () => { clearTimeout(timer); clearInterval(rep); };
+  b.addEventListener("pointerdown", go);
+  b.addEventListener("pointerup", stop);
+  b.addEventListener("pointerleave", stop);
+  b.addEventListener("pointercancel", stop);
+}
+hold("bl", () => move(-1, 0));
+hold("br", () => move(1, 0));
+hold("bd", () => move(0, 1));
+
+/* ==========================================================================
+   Boot
+   ========================================================================== */
+
+for (const n of NAMES) {
+  const im = new Image();
+  im.onload = () => {
+    if (++loaded === NAMES.length) {
+      newPlayArea();
+      level = 1; sixty9s = 0; score = 0; gravityAt = 110;
+      requestAnimationFrame(frame);
+    }
+  };
+  im.src = "assets/" + n + ".png";
+  img[n] = im;
+}
+</script>
+</body>
+</html>
